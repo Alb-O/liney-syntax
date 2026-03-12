@@ -1,8 +1,5 @@
 use {
-	liney_tree_house::{
-		InjectionLanguageMarker, Language, LanguageConfig, LanguageLoader, Syntax, TREE_SITTER_MATCH_LIMIT,
-		tree_sitter::{Grammar, InactiveQueryCursor, RopeInput},
-	},
+	liney_tree_house::{Language, SingleLanguageLoader, Syntax, tree_sitter::Grammar},
 	liney_tree_sitter_queries::{RainbowQuery, TagQuery, TextObjectQuery},
 	ropey::Rope,
 	std::{error::Error, time::Duration},
@@ -55,44 +52,15 @@ const RAINBOW_QUERY: &str = r#"
 ] @rainbow.scope
 "#;
 
-struct SingleLanguageLoader {
-	language: Language,
-	config: LanguageConfig,
-}
-
-impl SingleLanguageLoader {
-	fn rust() -> Result<Self, Box<dyn Error>> {
-		let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE)?;
-		let config = LanguageConfig::new(grammar, "", "", "")?;
-		Ok(Self {
-			language: Language::new(0),
-			config,
-		})
-	}
-
-	fn grammar(&self) -> Grammar {
-		self.config.grammar
-	}
-}
-
-impl LanguageLoader for SingleLanguageLoader {
-	fn language_for_marker(&self, _marker: InjectionLanguageMarker) -> Option<Language> {
-		Some(self.language)
-	}
-
-	fn get_config(&self, language: Language) -> Option<&LanguageConfig> {
-		(language == self.language).then_some(&self.config)
-	}
-}
-
 fn snippet(start: usize, end: usize) -> &'static str {
 	&SOURCE[start..end]
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-	let loader = SingleLanguageLoader::rust()?;
+	let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE)?;
+	let loader = SingleLanguageLoader::from_queries(Language::new(0), grammar, "", "", "")?;
 	let rope = Rope::from_str(SOURCE);
-	let syntax = Syntax::new(rope.slice(..), loader.language, Duration::from_millis(500), &loader)?;
+	let syntax = Syntax::new(rope.slice(..), loader.language(), Duration::from_millis(500), &loader)?;
 	let root = syntax.tree().root_node();
 
 	let text_objects = TextObjectQuery::new(loader.grammar(), TEXT_OBJECT_QUERY)?;
@@ -130,37 +98,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 	assert!(call_arguments.iter().any(|args| args == "(&user)"));
 
 	let tag_query = TagQuery::new(loader.grammar(), TAG_QUERY)?;
-	let name_capture = tag_query.query.get_capture("name").expect("name capture should exist");
-	let mut tag_cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT).execute_query(
-		&tag_query.query,
-		&root,
-		RopeInput::new(rope.slice(..)),
-	);
-	let mut tagged_functions = Vec::new();
-	while let Some(query_match) = tag_cursor.next_match() {
-		tagged_functions.extend(query_match.nodes_for_capture(name_capture).map(|node| {
+	let tagged_functions: Vec<_> = tag_query
+		.capture_nodes("name", &root, rope.slice(..))
+		.expect("name capture should exist")
+		.map(|node| {
 			let range = node.byte_range();
 			snippet(range.start as usize, range.end as usize).to_owned()
-		}));
-	}
+		})
+		.collect();
 	assert_eq!(
 		tagged_functions,
 		vec!["build_user".to_owned(), "greet".to_owned(), "main".to_owned()]
 	);
 
 	let rainbow_query = RainbowQuery::new(loader.grammar(), RAINBOW_QUERY)?;
-	let bracket_capture = rainbow_query
-		.bracket_capture
-		.expect("rainbow.bracket capture should exist");
-	let mut rainbow_cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT).execute_query(
-		&rainbow_query.query,
-		&root,
-		RopeInput::new(rope.slice(..)),
-	);
-	let mut bracket_count = 0;
-	while let Some(query_match) = rainbow_cursor.next_match() {
-		bracket_count += query_match.nodes_for_capture(bracket_capture).count();
-	}
+	let bracket_count = rainbow_query
+		.bracket_nodes(&root, rope.slice(..))
+		.expect("rainbow.bracket capture should exist")
+		.count();
 	assert!(bracket_count >= 10);
 
 	println!(

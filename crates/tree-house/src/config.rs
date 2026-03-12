@@ -39,6 +39,57 @@ impl LanguageConfig {
 	}
 }
 
+#[derive(Debug)]
+pub struct SingleLanguageLoader {
+	language: Language,
+	config: LanguageConfig,
+}
+
+impl SingleLanguageLoader {
+	pub fn new(language: Language, config: LanguageConfig) -> Self {
+		Self { language, config }
+	}
+
+	pub fn from_queries(
+		language: Language, grammar: Grammar, highlight_query_text: &str, injection_query_text: &str,
+		local_query_text: &str,
+	) -> Result<Self, query::ParseError> {
+		let config = LanguageConfig::new(grammar, highlight_query_text, injection_query_text, local_query_text)?;
+		Ok(Self::new(language, config))
+	}
+
+	pub fn with_highlights(
+		language: Language, grammar: Grammar, highlight_query_text: &str, injection_query_text: &str,
+		local_query_text: &str, configure: impl FnMut(&str) -> Option<Highlight>,
+	) -> Result<Self, query::ParseError> {
+		let loader = Self::from_queries(
+			language,
+			grammar,
+			highlight_query_text,
+			injection_query_text,
+			local_query_text,
+		)?;
+		loader.configure(configure);
+		Ok(loader)
+	}
+
+	pub fn language(&self) -> Language {
+		self.language
+	}
+
+	pub fn grammar(&self) -> Grammar {
+		self.config.grammar
+	}
+
+	pub fn config(&self) -> &LanguageConfig {
+		&self.config
+	}
+
+	pub fn configure(&self, f: impl FnMut(&str) -> Option<Highlight>) {
+		self.config.configure(f);
+	}
+}
+
 static INHERITS_REGEX: LazyLock<Regex> =
 	LazyLock::new(|| Regex::new(r";+\s*inherits\s*:?\s*([a-z_,()-]+)\s*").unwrap());
 
@@ -76,5 +127,15 @@ where
 
 	fn get_config(&self, lang: Language) -> Option<&LanguageConfig> {
 		T::get_config(self, lang)
+	}
+}
+
+impl LanguageLoader for SingleLanguageLoader {
+	fn language_for_marker(&self, _marker: InjectionLanguageMarker) -> Option<Language> {
+		Some(self.language)
+	}
+
+	fn get_config(&self, lang: Language) -> Option<&LanguageConfig> {
+		(lang == self.language).then_some(&self.config)
 	}
 }

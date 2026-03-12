@@ -8,7 +8,7 @@ use {
 	liney_tree_house::{
 		TREE_SITTER_MATCH_LIMIT,
 		tree_sitter::{
-			Grammar, InactiveQueryCursor, Node, Query, RopeInput,
+			Capture, Grammar, InactiveQueryCursor, Node, Query, RopeInput,
 			query::{InvalidPredicateError, UserPredicate},
 		},
 	},
@@ -66,52 +66,30 @@ impl TextObjectQuery {
 		&'a self, capture_name: &str, node: &Node<'a>, source: RopeSlice<'a>,
 	) -> Option<impl Iterator<Item = CapturedNode<'a>>> {
 		let capture = self.query.get_capture(capture_name)?;
-
-		let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT).execute_query(
-			&self.query,
-			node,
-			RopeInput::new(source),
-		);
-
-		let capture_node = iter::from_fn(move || {
-			let mat = cursor.next_match()?;
-			Some(mat.nodes_for_capture(capture).cloned().collect())
-		})
-		.filter_map(|nodes: Vec<_>| {
-			if nodes.len() > 1 {
-				Some(CapturedNode::Grouped(nodes))
-			} else {
-				nodes.into_iter().map(CapturedNode::Single).next()
-			}
-		});
-
-		Some(capture_node)
+		Some(
+			matched_capture_nodes(&self.query, capture, node, source).filter_map(|nodes| {
+				if nodes.len() > 1 {
+					Some(CapturedNode::Grouped(nodes))
+				} else {
+					nodes.into_iter().map(CapturedNode::Single).next()
+				}
+			}),
+		)
 	}
 
 	pub fn capture_nodes_any<'a>(
 		&'a self, capture_names: &[&str], node: &Node<'a>, source: RopeSlice<'a>,
 	) -> Option<impl Iterator<Item = CapturedNode<'a>>> {
 		let capture = capture_names.iter().find_map(|name| self.query.get_capture(name))?;
-
-		let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT).execute_query(
-			&self.query,
-			node,
-			RopeInput::new(source),
-		);
-
-		let capture_node = iter::from_fn(move || {
-			let mat = cursor.next_match()?;
-			Some(mat.nodes_for_capture(capture).cloned().collect())
-		})
-		.filter_map(|nodes: Vec<_>| {
-			if nodes.len() > 1 {
-				Some(CapturedNode::Grouped(nodes))
-			} else {
-				nodes.into_iter().map(CapturedNode::Single).next()
-			}
-		});
-
-		Some(capture_node)
+		Some(
+			matched_capture_nodes(&self.query, capture, node, source).filter_map(|nodes| {
+				if nodes.len() > 1 {
+					Some(CapturedNode::Grouped(nodes))
+				} else {
+					nodes.into_iter().map(CapturedNode::Single).next()
+				}
+			}),
+		)
 	}
 }
 
@@ -161,6 +139,13 @@ impl TagQuery {
 
 		Ok(Self { query })
 	}
+
+	pub fn capture_nodes<'a>(
+		&'a self, capture_name: &str, node: &Node<'a>, source: RopeSlice<'a>,
+	) -> Option<impl Iterator<Item = Node<'a>>> {
+		let capture = self.query.get_capture(capture_name)?;
+		Some(capture_nodes(&self.query, capture, node, source))
+	}
 }
 
 /// Query for rainbow bracket highlighting.
@@ -191,5 +176,139 @@ impl RainbowQuery {
 			bracket_capture: query.get_capture("rainbow.bracket"),
 			query,
 		})
+	}
+
+	pub fn capture_nodes<'a>(
+		&'a self, capture_name: &str, node: &Node<'a>, source: RopeSlice<'a>,
+	) -> Option<impl Iterator<Item = Node<'a>>> {
+		let capture = self.query.get_capture(capture_name)?;
+		Some(capture_nodes(&self.query, capture, node, source))
+	}
+
+	pub fn bracket_nodes<'a>(
+		&'a self, node: &Node<'a>, source: RopeSlice<'a>,
+	) -> Option<impl Iterator<Item = Node<'a>>> {
+		let capture = self.bracket_capture?;
+		Some(capture_nodes(&self.query, capture, node, source))
+	}
+
+	pub fn scope_nodes<'a>(&'a self, node: &Node<'a>, source: RopeSlice<'a>) -> Option<impl Iterator<Item = Node<'a>>> {
+		let capture = self.scope_capture?;
+		Some(capture_nodes(&self.query, capture, node, source))
+	}
+}
+
+fn matched_capture_nodes<'a>(
+	query: &'a Query, capture: Capture, node: &Node<'a>, source: RopeSlice<'a>,
+) -> impl Iterator<Item = Vec<Node<'a>>> {
+	let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT).execute_query(
+		query,
+		node,
+		RopeInput::new(source),
+	);
+
+	iter::from_fn(move || {
+		loop {
+			let mat = cursor.next_match()?;
+			let nodes: Vec<_> = mat.nodes_for_capture(capture).cloned().collect();
+			if !nodes.is_empty() {
+				return Some(nodes);
+			}
+		}
+	})
+}
+
+fn capture_nodes<'a>(
+	query: &'a Query, capture: Capture, node: &Node<'a>, source: RopeSlice<'a>,
+) -> impl Iterator<Item = Node<'a>> {
+	let mut matches = matched_capture_nodes(query, capture, node, source);
+	let mut pending = Vec::new();
+
+	iter::from_fn(move || {
+		loop {
+			if let Some(node) = pending.pop() {
+				return Some(node);
+			}
+			pending = matches.next()?;
+			pending.reverse();
+		}
+	})
+}
+
+#[cfg(test)]
+mod tests {
+	use {
+		super::*,
+		liney_tree_house::{Language, SingleLanguageLoader, Syntax},
+		ropey::Rope,
+		std::{error::Error, time::Duration},
+	};
+
+	const SOURCE: &str = r#"fn alpha() {}
+
+fn beta(arg: i32) -> i32 {
+    alpha();
+    arg + 1
+}
+"#;
+
+	const TAG_QUERY: &str = r#"
+(function_item
+  name: (identifier) @name) @definition.function
+"#;
+
+	const RAINBOW_QUERY: &str = r#"
+[
+  "{"
+  "}"
+  "("
+  ")"
+] @rainbow.bracket
+
+[
+  (block)
+  (parameters)
+  (arguments)
+] @rainbow.scope
+"#;
+
+	fn root() -> Result<(Rope, Syntax, SingleLanguageLoader), Box<dyn Error>> {
+		let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE)?;
+		let loader = SingleLanguageLoader::from_queries(Language::new(0), grammar, "", "", "")?;
+		let rope = Rope::from_str(SOURCE);
+		let syntax = Syntax::new(rope.slice(..), loader.language(), Duration::from_millis(500), &loader)?;
+		Ok((rope, syntax, loader))
+	}
+
+	#[test]
+	fn tag_query_runs_without_manual_cursor_plumbing() -> Result<(), Box<dyn Error>> {
+		let (rope, syntax, loader) = root()?;
+		let query = TagQuery::new(loader.grammar(), TAG_QUERY)?;
+		let names: Vec<_> = query
+			.capture_nodes("name", &syntax.tree().root_node(), rope.slice(..))
+			.expect("name capture should exist")
+			.map(|node| SOURCE[node.start_byte() as usize..node.end_byte() as usize].to_owned())
+			.collect();
+
+		assert_eq!(names, vec!["alpha".to_owned(), "beta".to_owned()]);
+		Ok(())
+	}
+
+	#[test]
+	fn rainbow_query_exposes_bracket_runner() -> Result<(), Box<dyn Error>> {
+		let (rope, syntax, loader) = root()?;
+		let query = RainbowQuery::new(loader.grammar(), RAINBOW_QUERY)?;
+		let brackets = query
+			.bracket_nodes(&syntax.tree().root_node(), rope.slice(..))
+			.expect("bracket capture should exist")
+			.count();
+		let scopes = query
+			.scope_nodes(&syntax.tree().root_node(), rope.slice(..))
+			.expect("scope capture should exist")
+			.count();
+
+		assert!(brackets >= 6);
+		assert!(scopes >= 3);
+		Ok(())
 	}
 }

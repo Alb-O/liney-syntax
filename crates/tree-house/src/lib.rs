@@ -12,7 +12,7 @@ use {
 };
 pub use {
 	crate::{
-		config::{LanguageConfig, LanguageLoader, read_query},
+		config::{LanguageConfig, LanguageLoader, SingleLanguageLoader, read_query},
 		injections_query::{InjectionLanguageMarker, InjectionsQuery},
 		sealed_source::SealedSource,
 		tree_cursor::TreeCursor,

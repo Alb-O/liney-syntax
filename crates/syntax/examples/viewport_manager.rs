@@ -1,11 +1,10 @@
 use {
 	liney_syntax::{
-		DocumentId, Highlight, HighlightSpanQuery, HighlightTiles, Language, LanguageConfig, LanguageLoader,
-		SealedSource, Syntax, SyntaxManager, SyntaxOptions, ViewportKey, tree_sitter::Grammar,
+		DocumentId, Highlight, HighlightSpanQuery, HighlightTiles, Language, SealedSource, SingleLanguageLoader,
+		Syntax, SyntaxManager, SyntaxOptions, ViewportKey, tree_sitter::Grammar,
 	},
-	liney_tree_house::InjectionLanguageMarker,
 	ropey::Rope,
-	std::{error::Error, sync::Arc},
+	std::error::Error,
 };
 
 const H_IDENTIFIER: u32 = 1;
@@ -39,53 +38,26 @@ const HIGHLIGHT_QUERY: &str = r#"
 ] @punctuation.bracket
 "#;
 
-struct SingleLanguageLoader {
-	language: Language,
-	config: LanguageConfig,
-}
-
-impl SingleLanguageLoader {
-	fn rust() -> Result<Self, Box<dyn Error>> {
-		let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE)?;
-		let config = LanguageConfig::new(grammar, HIGHLIGHT_QUERY, "", "")?;
-		config.configure(|name| {
-			Some(match name {
-				"identifier" => Highlight::new(H_IDENTIFIER),
-				"type" => Highlight::new(H_TYPE),
-				"type.builtin" => Highlight::new(H_BUILTIN_TYPE),
-				"string" => Highlight::new(H_STRING),
-				"number" => Highlight::new(H_NUMBER),
-				"punctuation.bracket" => Highlight::new(H_BRACKET),
-				_ => return None,
-			})
-		});
-
-		Ok(Self {
-			language: Language::new(0),
-			config,
-		})
-	}
-}
-
-impl LanguageLoader for SingleLanguageLoader {
-	fn language_for_marker(&self, _marker: InjectionLanguageMarker) -> Option<Language> {
-		Some(self.language)
-	}
-
-	fn get_config(&self, language: Language) -> Option<&LanguageConfig> {
-		(language == self.language).then_some(&self.config)
-	}
-}
-
 fn snippet(range: std::ops::Range<u32>) -> &'static str {
 	&SOURCE[range.start as usize..range.end as usize]
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-	let loader = SingleLanguageLoader::rust()?;
+	let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE)?;
+	let loader = SingleLanguageLoader::with_highlights(Language::new(0), grammar, HIGHLIGHT_QUERY, "", "", |name| {
+		Some(match name {
+			"identifier" => Highlight::new(H_IDENTIFIER),
+			"type" => Highlight::new(H_TYPE),
+			"type.builtin" => Highlight::new(H_BUILTIN_TYPE),
+			"string" => Highlight::new(H_STRING),
+			"number" => Highlight::new(H_NUMBER),
+			"punctuation.bracket" => Highlight::new(H_BRACKET),
+			_ => return None,
+		})
+	})?;
 	let rope = Rope::from_str(SOURCE);
 	let opts = SyntaxOptions::default();
-	let full = Syntax::new(rope.slice(..), loader.language, &loader, opts)?;
+	let full = Syntax::new(rope.slice(..), loader.language(), &loader, opts)?;
 	let full_spans = full.highlighter(rope.slice(..), &loader, ..).collect_spans();
 	assert!(
 		full_spans
@@ -95,11 +67,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	let viewport_start = SOURCE.find("fn middle").expect("viewport start should exist") as u32;
 	let viewport_end = SOURCE.find("\n\nconst AFTER").expect("viewport end should exist") as u32;
-	let sealed = Arc::new(SealedSource::from_window(
-		rope.byte_slice(viewport_start as usize..viewport_end as usize),
-		"",
-	));
-	let viewport = Syntax::new_viewport(sealed, loader.language, &loader, opts, viewport_start)?;
+	let sealed = SealedSource::from_byte_range_with_newline_padding(rope.slice(..), viewport_start..viewport_end);
+	let viewport = Syntax::new_viewport(sealed.into(), loader.language(), &loader, opts, viewport_start)?;
 	let viewport_spans = viewport
 		.highlighter(rope.slice(..), &loader, viewport_start..viewport_end)
 		.collect_spans();
@@ -119,6 +88,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 	let mut manager = SyntaxManager::new();
 	manager.install_full(doc_id, full.clone(), 1);
 	manager.install_viewport_stage_b(doc_id, viewport_key, viewport.clone(), viewport_start..viewport_end, 2);
+	let syntax_version = manager.syntax_version(doc_id);
+	manager.install_viewport_stage_a(doc_id, viewport_key, full.clone(), 0..SOURCE.len() as u32, 1);
+	assert_eq!(manager.syntax_version(doc_id), syntax_version);
 
 	let viewport_selection = manager
 		.syntax_for_viewport(doc_id, 2, viewport_start..viewport_end)
@@ -135,7 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 		rope: &rope,
 		syntax: viewport_selection.syntax,
 		loader: &loader,
-		style_resolver: |highlight| highlight.get(),
+		style_resolver: Highlight::get,
 		start_line,
 		end_line,
 	});

@@ -12,7 +12,8 @@ pub use {
 	highlight::{HighlightSpan, Highlighter},
 	highlight_cache::{HighlightKey, HighlightSpanQuery, HighlightTile, HighlightTiles, TILE_SIZE},
 	liney_tree_house::{
-		Language, LanguageConfig, LanguageLoader, SealedSource, TreeCursor, highlighter::Highlight, tree_sitter,
+		Language, LanguageConfig, LanguageLoader, SealedSource, SingleLanguageLoader, TreeCursor,
+		highlighter::Highlight, tree_sitter,
 	},
 	manager::{
 		DocumentId, InstalledSyntax, SyntaxManager, SyntaxSelection, SyntaxSlot, ViewportEntry, ViewportKey,
