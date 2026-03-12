@@ -304,6 +304,8 @@ impl fmt::Display for Error {
 	}
 }
 
+impl std::error::Error for Error {}
+
 /// The maximum number of in-progress matches a TS cursor can consider at once.
 /// This is set to a constant in order to avoid performance problems for medium to large files. Set with `set_match_limit`.
 /// Using such a limit means that we lose valid captures, so there is fundamentally a tradeoff here.

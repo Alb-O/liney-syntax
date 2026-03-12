@@ -69,6 +69,7 @@ dependencies = [
  "liney-tree-house",
  "ropey",
  "tree-house-bindings",
+ "tree-sitter-rust",
 ]
 
 [[package]]
@@ -89,6 +90,7 @@ version = "0.1.0"
 dependencies = [
  "liney-tree-house",
  "ropey",
+ "tree-sitter-rust",
 ]
 
 [[package]]
@@ -288,6 +290,23 @@ dependencies = [
  "regex-cursor",
  "ropey",
  "thiserror",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-language"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
+
+[[package]]
+name = "tree-sitter-rust"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b9b18034c684a2420722be8b2a91c9c44f2546b631c039edf575ccba8c61be1"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
 ]
 
 [[package]]

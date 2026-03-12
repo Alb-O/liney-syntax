@@ -9,3 +9,6 @@ license.workspace = true
 liney-tree-house = { path = "../tree-house" }
 ropey.workspace = true
 tree-sitter = { workspace = true, features = ["ropey"] }
+
+[dev-dependencies]
+tree-sitter-rust.workspace = true

@@ -16,4 +16,5 @@ ropey = true
 slab = true
 thiserror = true
 tracing = true
-tree-sitter = { package = "tree-house-bindings" }
+tree-sitter = { package = "tree-house-bindings", features = ["ropey", "tree-sitter-language"] }
+tree-sitter-rust = true
