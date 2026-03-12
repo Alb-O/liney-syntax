@@ -9,5 +9,8 @@ and structural queries.
 - `crates/syntax`
   Standalone syntax document state restored from the legacy editor: viewport/full
   tree selection, viewport-aware syntax wrappers, and tiled highlight caching.
+- `crates/language`
+  Runtime helpers for loading queries, fetching/building grammars, and pinning
+  Helix query snapshots without the editor/registry layer.
 - `crates/tree-sitter-queries`
   Reusable query helpers for indentation, text objects, tags, and rainbow scopes.

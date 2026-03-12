@@ -9,8 +9,11 @@ license = "MPL-2.0"
 
 [workspace.dependencies]
 arc-swap = true
+cc = true
 regex = true
 regex-cursor = true
 ropey = true
 slab = true
+thiserror = true
+tracing = true
 tree-sitter = { package = "tree-house-bindings" }

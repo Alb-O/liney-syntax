@@ -1,0 +1,204 @@
+use {
+	std::{
+		collections::BTreeMap,
+		fs,
+		path::{Path, PathBuf},
+		process::Command,
+		time::{SystemTime, UNIX_EPOCH},
+	},
+	thiserror::Error,
+};
+
+/// Pin identifying the Helix runtime query snapshot to fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelixRuntimeLock {
+	pub upstream: String,
+	pub commit: String,
+}
+
+/// Errors that can occur while fetching Helix runtime queries.
+#[derive(Debug, Error)]
+pub enum HelixQueryError {
+	#[error("git command failed in {dir}: {message}")]
+	Git { dir: String, message: String },
+	#[error("IO error: {0}")]
+	Io(#[from] std::io::Error),
+	#[error("helix checkout resolved to {actual} but lock requires {expected}")]
+	CommitMismatch { actual: String, expected: String },
+	#[error("helix runtime checkout missing queries dir: {0}")]
+	MissingQueriesDir(String),
+}
+
+/// Ensures a sparse checkout containing `runtime/queries` exists under
+/// `cache_root/<commit>`, returning the resolved query directory.
+pub fn ensure_helix_queries_checkout(cache_root: &Path, lock: &HelixRuntimeLock) -> Result<PathBuf, HelixQueryError> {
+	let checkout_dir = cache_root.join(&lock.commit);
+	let queries_dir = checkout_dir.join("runtime").join("queries");
+
+	if is_valid_checkout(&checkout_dir, &lock.commit) {
+		return Ok(queries_dir);
+	}
+
+	if checkout_dir.exists() {
+		fs::remove_dir_all(&checkout_dir)?;
+	}
+	fs::create_dir_all(cache_root)?;
+
+	let nonce = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.expect("time should be after unix epoch")
+		.as_nanos();
+	let staging = cache_root.join(format!(".tmp-helix-runtime-{}-{nonce}", std::process::id()));
+	if staging.exists() {
+		fs::remove_dir_all(&staging)?;
+	}
+
+	clone_sparse_helix_queries(&staging, lock)?;
+	match fs::rename(&staging, &checkout_dir) {
+		Ok(()) => {}
+		Err(_) if is_valid_checkout(&checkout_dir, &lock.commit) => {
+			fs::remove_dir_all(&staging)?;
+		}
+		Err(error) => return Err(HelixQueryError::Io(error)),
+	}
+
+	let queries_dir = checkout_dir.join("runtime").join("queries");
+	if !queries_dir.is_dir() {
+		return Err(HelixQueryError::MissingQueriesDir(queries_dir.display().to_string()));
+	}
+
+	Ok(queries_dir)
+}
+
+/// Merges `.scm` files for `language` from `roots`, with later roots overriding
+/// earlier roots by query kind.
+pub fn merge_language_queries(language: &str, roots: &[PathBuf]) -> std::io::Result<BTreeMap<String, String>> {
+	let mut merged = BTreeMap::new();
+
+	for root in roots {
+		let lang_dir = root.join(language);
+		if !lang_dir.is_dir() {
+			continue;
+		}
+
+		for path in collect_files_sorted(&lang_dir, "scm")? {
+			let kind = path
+				.file_stem()
+				.and_then(|stem| stem.to_str())
+				.ok_or_else(|| std::io::Error::other(format!("invalid query filename: {}", path.display())))?
+				.to_string();
+			let text = fs::read_to_string(&path)?;
+			merged.insert(kind, text);
+		}
+	}
+
+	Ok(merged)
+}
+
+fn collect_files_sorted(dir: &Path, extension: &str) -> std::io::Result<Vec<PathBuf>> {
+	let mut files = Vec::new();
+	for entry in fs::read_dir(dir)? {
+		let entry = entry?;
+		let path = entry.path();
+		if path.extension().and_then(|ext| ext.to_str()) == Some(extension) {
+			files.push(path);
+		}
+	}
+	files.sort();
+	Ok(files)
+}
+
+fn is_valid_checkout(checkout_dir: &Path, commit: &str) -> bool {
+	if !checkout_dir.join("runtime").join("queries").is_dir() {
+		return false;
+	}
+
+	match run_git_capture(checkout_dir, &["rev-parse", "HEAD"]) {
+		Ok(head) => head.trim() == commit,
+		Err(_) => false,
+	}
+}
+
+fn clone_sparse_helix_queries(checkout_dir: &Path, lock: &HelixRuntimeLock) -> Result<(), HelixQueryError> {
+	fs::create_dir_all(checkout_dir)?;
+
+	run_git(checkout_dir, &["init", "-q"])?;
+	run_git(checkout_dir, &["remote", "add", "origin", &lock.upstream])?;
+	run_git(checkout_dir, &["config", "core.sparseCheckout", "true"])?;
+
+	let sparse_checkout = checkout_dir.join(".git").join("info").join("sparse-checkout");
+	fs::write(&sparse_checkout, "/runtime/queries/\n")?;
+
+	run_git(checkout_dir, &["fetch", "--depth=1", "origin", &lock.commit, "-q"])?;
+	run_git(checkout_dir, &["checkout", "FETCH_HEAD", "-q"])?;
+
+	let head = run_git_capture(checkout_dir, &["rev-parse", "HEAD"])?;
+	if head.trim() != lock.commit {
+		return Err(HelixQueryError::CommitMismatch {
+			actual: head.trim().to_string(),
+			expected: lock.commit.clone(),
+		});
+	}
+
+	Ok(())
+}
+
+fn run_git(dir: &Path, args: &[&str]) -> Result<(), HelixQueryError> {
+	run_git_capture(dir, args).map(|_| ())
+}
+
+fn run_git_capture(dir: &Path, args: &[&str]) -> Result<String, HelixQueryError> {
+	let output = Command::new("git")
+		.args(args)
+		.current_dir(dir)
+		.output()
+		.map_err(|error| HelixQueryError::Git {
+			dir: dir.display().to_string(),
+			message: error.to_string(),
+		})?;
+
+	if output.status.success() {
+		Ok(String::from_utf8_lossy(&output.stdout).to_string())
+	} else {
+		Err(HelixQueryError::Git {
+			dir: dir.display().to_string(),
+			message: String::from_utf8_lossy(&output.stderr).to_string(),
+		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn temp_root(name: &str) -> PathBuf {
+		let nonce = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.expect("time should be after unix epoch")
+			.as_nanos();
+		let root = std::env::temp_dir().join(format!("liney-helix-{name}-{nonce}"));
+		fs::create_dir_all(&root).expect("temp root should be created");
+		root
+	}
+
+	#[test]
+	fn later_roots_override_earlier_query_files() {
+		let root_a = temp_root("merge-a");
+		let root_b = temp_root("merge-b");
+		fs::create_dir_all(root_a.join("rust")).expect("root a rust dir should exist");
+		fs::create_dir_all(root_b.join("rust")).expect("root b rust dir should exist");
+
+		fs::write(root_a.join("rust").join("highlights.scm"), "(a) @variable\n")
+			.expect("root a query should be written");
+		fs::write(root_a.join("rust").join("locals.scm"), "(a) @local.scope\n")
+			.expect("root a locals should be written");
+		fs::write(root_b.join("rust").join("highlights.scm"), "(b) @type\n").expect("root b query should be written");
+
+		let merged = merge_language_queries("rust", &[root_a.clone(), root_b.clone()]).expect("queries should merge");
+		assert_eq!(merged.get("highlights").map(String::as_str), Some("(b) @type\n"));
+		assert_eq!(merged.get("locals").map(String::as_str), Some("(a) @local.scope\n"));
+
+		fs::remove_dir_all(root_a).expect("root a should be removed");
+		fs::remove_dir_all(root_b).expect("root b should be removed");
+	}
+}

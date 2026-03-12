@@ -1,11 +1,10 @@
+pub use tree_house::highlighter::Highlight;
 use {
 	crate::LanguageLoader,
 	liney_tree_house::{self as tree_house, highlighter::HighlightEvent},
 	ropey::RopeSlice,
 	std::ops::{Bound, RangeBounds},
 };
-
-pub use tree_house::highlighter::Highlight;
 
 /// A byte span with an associated tree-sitter highlight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

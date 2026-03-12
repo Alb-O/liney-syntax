@@ -3,6 +3,7 @@
 
 //! Structural tree-sitter query helpers built on top of `liney_tree_house`.
 
+pub use liney_tree_house::read_query;
 use {
 	liney_tree_house::{
 		TREE_SITTER_MATCH_LIMIT,
@@ -14,8 +15,6 @@ use {
 	ropey::RopeSlice,
 	std::iter,
 };
-
-pub use liney_tree_house::read_query;
 
 /// Query for computing indentation.
 #[derive(Debug)]

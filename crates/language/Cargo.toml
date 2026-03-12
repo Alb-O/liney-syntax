@@ -1,0 +1,12 @@
+[package]
+name = "liney-language"
+description = "Grammar loading, query lookup, and grammar/query fetch-build helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cc.workspace = true
+liney-tree-house = { path = "../tree-house" }
+thiserror.workspace = true
+tracing.workspace = true
