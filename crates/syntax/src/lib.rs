@@ -1,7 +1,6 @@
 //! Standalone syntax state and highlighting utilities.
 //!
-//! This crate restores the reusable part of Xeno's syntax layer without the
-//! editor runtime coupling: a syntax wrapper, per-document tree state,
+//! This crate provides a syntax wrapper, per-document tree state,
 //! viewport/full-tree selection, and tiled highlight caching.
 
 mod highlight;

@@ -1,6 +1,6 @@
-//! Generic language-runtime helpers extracted from the editor-specific syntax stack.
+//! Generic language-runtime helpers for tree-sitter grammars and queries.
 //!
-//! This crate keeps the reusable pieces needed to:
+//! This crate provides the pieces needed to:
 //! - find and load compiled tree-sitter grammars
 //! - fetch grammar sources from git and build shared libraries
 //! - read query files with `; inherits` resolution
