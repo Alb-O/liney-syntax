@@ -236,7 +236,7 @@ where
 	};
 
 	syntax
-		.highlighter(rope.slice(..), loader, tile_start_byte..tile_end_byte)
+		.highlight_spans(loader, tile_start_byte..tile_end_byte)
 		.filter_map(|mut span| {
 			span.start = span.start.max(tile_start_byte).min(tile_end_byte);
 			span.end = span.end.max(tile_start_byte).min(tile_end_byte);

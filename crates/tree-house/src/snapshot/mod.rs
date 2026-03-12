@@ -2,146 +2,15 @@ use {
 	crate::{
 		Language, LanguageLoader, Layer, Syntax, TREE_SITTER_MATCH_LIMIT, TreeCursor,
 		change::{Revision, SnapshotId},
-		highlighter::{Highlight, HighlightEvent},
+		highlighter::HighlightSpans,
 		locals::{Definition, Locals},
 		query_iter::{QueryIter, QueryLoader},
 		text::DocumentText,
 	},
 	ropey::{Rope, RopeSlice},
-	std::{
-		ops::{Bound, RangeBounds},
-		sync::Arc,
-	},
+	std::{ops::RangeBounds, sync::Arc},
 	tree_sitter::{Capture, InactiveQueryCursor, Node, Query, RopeInput, Tree},
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HighlightSpan {
-	pub start: u32,
-	pub end: u32,
-	pub highlight: Highlight,
-}
-
-impl HighlightSpan {
-	pub fn range(&self) -> std::ops::Range<u32> {
-		self.start..self.end
-	}
-
-	pub fn len(&self) -> u32 {
-		self.end - self.start
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.start >= self.end
-	}
-}
-
-pub struct HighlightSpans<'a, Loader>
-where
-	Loader: LanguageLoader,
-{
-	inner: crate::highlighter::Highlighter<'a, 'a, Loader>,
-	end_byte: u32,
-	current_start: u32,
-	current_highlight: Option<Highlight>,
-}
-
-impl<'a, Loader> HighlightSpans<'a, Loader>
-where
-	Loader: LanguageLoader,
-{
-	pub fn new(snapshot: &'a DocumentSnapshot, loader: &'a Loader, range: impl RangeBounds<u32>) -> Self {
-		let start = match range.start_bound() {
-			Bound::Included(&n) => n,
-			Bound::Excluded(&n) => n + 1,
-			Bound::Unbounded => 0,
-		};
-		let end = match range.end_bound() {
-			Bound::Included(&n) => n + 1,
-			Bound::Excluded(&n) => n,
-			Bound::Unbounded => snapshot.len_bytes(),
-		};
-
-		let inner = crate::highlighter::Highlighter::new(snapshot.syntax(), snapshot.rope_slice(), loader, start..end);
-		Self {
-			current_start: inner.next_event_offset(),
-			inner,
-			end_byte: end,
-			current_highlight: None,
-		}
-	}
-
-	pub fn next_event_offset(&self) -> u32 {
-		self.inner.next_event_offset()
-	}
-
-	pub fn is_done(&self) -> bool {
-		self.next_event_offset() >= self.end_byte
-	}
-
-	pub fn collect_spans(self) -> Vec<HighlightSpan> {
-		self.collect()
-	}
-
-	fn close_span(&self, event_start: u32) -> Option<HighlightSpan> {
-		self.current_highlight.and_then(|highlight| {
-			(self.current_start < event_start).then_some(HighlightSpan {
-				start: self.current_start,
-				end: event_start,
-				highlight,
-			})
-		})
-	}
-}
-
-impl<'a, Loader> Iterator for HighlightSpans<'a, Loader>
-where
-	Loader: LanguageLoader,
-{
-	type Item = HighlightSpan;
-
-	fn next(&mut self) -> Option<Self::Item> {
-		while self.inner.next_event_offset() < self.end_byte {
-			let event_start = self.inner.next_event_offset();
-			if event_start == u32::MAX {
-				break;
-			}
-			let (event, mut highlights) = self.inner.advance();
-			let new_highlight = highlights.next_back();
-
-			let span = self.close_span(event_start);
-			self.current_start = event_start;
-
-			match event {
-				HighlightEvent::Push => {
-					if new_highlight.is_some() {
-						self.current_highlight = new_highlight;
-					}
-				}
-				HighlightEvent::Refresh => {
-					self.current_highlight = new_highlight;
-				}
-			}
-
-			if span.is_some() {
-				return span;
-			}
-		}
-
-		if let Some(highlight) = self.current_highlight.take() {
-			let end = self.inner.next_event_offset().min(self.end_byte);
-			if self.current_start < end {
-				return Some(HighlightSpan {
-					start: self.current_start,
-					end,
-					highlight,
-				});
-			}
-		}
-
-		None
-	}
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct LocalScope<'a> {
@@ -251,13 +120,13 @@ impl DocumentSnapshot {
 		self.syntax.walk()
 	}
 
-	pub fn highlights<'a, Loader>(
+	pub fn highlight_spans<'a, Loader>(
 		&'a self, loader: &'a Loader, range: impl RangeBounds<u32>,
 	) -> HighlightSpans<'a, Loader>
 	where
 		Loader: LanguageLoader,
 	{
-		HighlightSpans::new(self, loader, range)
+		HighlightSpans::new(self.syntax(), self.rope_slice(), loader, range)
 	}
 
 	pub fn locals_at(&self, byte: u32) -> LocalScope<'_> {

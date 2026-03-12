@@ -14,7 +14,7 @@ use {
 		fmt,
 		mem::replace,
 		num::NonZeroU32,
-		ops::RangeBounds,
+		ops::{Bound, RangeBounds},
 		slice,
 		sync::Arc,
 	},
@@ -101,7 +101,7 @@ impl HighlightQuery {
 	/// The closure provided to this function should therefore try to first lookup the full
 	/// name. If no highlight was found for that name it should [`rsplit_once('.')`](str::rsplit_once)
 	/// and retry until a highlight has been found. If none of the parent scopes are defined
-	/// then `Highlight::NONE` should be returned.
+	/// then `None` should be returned.
 	///
 	/// When highlighting, results are returned as `Highlight` values, configured by this function.
 	/// The meaning of these indices is up to the user of the implementation. The highlighter
@@ -155,7 +155,7 @@ pub struct LayerData {
 	dormant_highlights: Vec<HighlightedNode>,
 }
 
-pub struct Highlighter<'a, 'tree, Loader: LanguageLoader> {
+pub struct HighlightEvents<'a, 'tree, Loader: LanguageLoader> {
 	query: QueryIter<'a, 'tree, HighlightQueryLoader<&'a Loader>, ()>,
 	next_query_event: Option<QueryIterEvent<'tree, ()>>,
 	/// The stack of currently active highlights.
@@ -219,11 +219,11 @@ pub enum HighlightEvent {
 	Push,
 }
 
-impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
+impl<'a, 'tree: 'a, Loader: LanguageLoader> HighlightEvents<'a, 'tree, Loader> {
 	pub fn new(syntax: &'tree Syntax, src: RopeSlice<'a>, loader: &'a Loader, range: impl RangeBounds<u32>) -> Self {
 		let mut query = QueryIter::new(syntax, src, HighlightQueryLoader(loader), range);
 		let active_language = query.current_language();
-		let mut res = Highlighter {
+		let mut res = HighlightEvents {
 			active_config: query.loader().0.get_config(active_language),
 			next_query_event: None,
 			current_layer: query.current_layer(),
@@ -356,6 +356,23 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
 		debug_assert!(!range.is_empty(), "QueryIter should not emit matches with empty ranges");
 
 		let config = self.active_config.expect("must have an active config to emit matches");
+		if config.highlight_query.non_local_patterns.contains(&node.pattern) {
+			let text: Cow<str> = self
+				.query
+				.source()
+				.byte_slice(range.start as usize..range.end as usize)
+				.into();
+			let is_local = self
+				.query
+				.syntax()
+				.layer(self.current_layer)
+				.locals
+				.lookup_reference(node.scope, &text)
+				.is_some_and(|def| range.start >= def.range.start);
+			if is_local {
+				return;
+			}
+		}
 
 		let highlight = if Some(node.capture) == config.highlight_query.local_reference_capture {
 			// If this capture was a `@local.reference` from the locals queries, look up the
@@ -442,6 +459,267 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
 	}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighlightSpan {
+	pub start: u32,
+	pub end: u32,
+	pub highlight: Highlight,
+}
+
+impl HighlightSpan {
+	pub fn range(&self) -> std::ops::Range<u32> {
+		self.start..self.end
+	}
+
+	pub fn len(&self) -> u32 {
+		self.end - self.start
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.start >= self.end
+	}
+}
+
+/// Iterator wrapper that emits contiguous highlight spans.
+pub struct HighlightSpans<'a, Loader>
+where
+	Loader: LanguageLoader,
+{
+	inner: HighlightEvents<'a, 'a, Loader>,
+	current_start: u32,
+	current_highlight: Option<Highlight>,
+	base: u32,
+	end_doc: u32,
+}
+
+impl<'a, Loader> HighlightSpans<'a, Loader>
+where
+	Loader: LanguageLoader,
+{
+	fn doc_offset(base: u32, local: u32) -> u32 {
+		if local == u32::MAX {
+			u32::MAX
+		} else {
+			base.saturating_add(local)
+		}
+	}
+
+	fn normalize_range(range: impl RangeBounds<u32>, end: u32) -> (u32, u32) {
+		let start = match range.start_bound() {
+			Bound::Included(&n) => n,
+			Bound::Excluded(&n) => n + 1,
+			Bound::Unbounded => 0,
+		};
+		let end = match range.end_bound() {
+			Bound::Included(&n) => n + 1,
+			Bound::Excluded(&n) => n,
+			Bound::Unbounded => end,
+		};
+		(start, end)
+	}
+
+	pub fn new(syntax: &'a Syntax, source: RopeSlice<'a>, loader: &'a Loader, range: impl RangeBounds<u32>) -> Self {
+		let (start, end) = Self::normalize_range(range, syntax.tree().root_node().end_byte());
+		let inner = HighlightEvents::new(syntax, source, loader, start..end);
+		Self {
+			current_start: Self::doc_offset(0, inner.next_event_offset()),
+			inner,
+			current_highlight: None,
+			base: 0,
+			end_doc: end,
+		}
+	}
+
+	pub fn new_mapped(
+		syntax: &'a Syntax, source: RopeSlice<'a>, loader: &'a Loader, doc_range: impl RangeBounds<u32>, base: u32,
+		end_doc: u32,
+	) -> Self {
+		let (start_doc, end_doc_req) = Self::normalize_range(doc_range, u32::MAX);
+		let start_local = start_doc.saturating_sub(base);
+		let end_local = end_doc_req.saturating_sub(base).min(end_doc.saturating_sub(base));
+		let inner = HighlightEvents::new(syntax, source, loader, start_local..end_local);
+		Self {
+			current_start: Self::doc_offset(base, inner.next_event_offset()),
+			inner,
+			current_highlight: None,
+			base,
+			end_doc: base.saturating_add(end_local),
+		}
+	}
+
+	pub fn collect_spans(self) -> Vec<HighlightSpan> {
+		self.collect()
+	}
+
+	fn close_span(&self, event_start_doc: u32) -> Option<HighlightSpan> {
+		self.current_highlight.and_then(|highlight| {
+			if event_start_doc == u32::MAX {
+				return None;
+			}
+			(self.current_start < event_start_doc).then_some(HighlightSpan {
+				start: self.current_start,
+				end: event_start_doc,
+				highlight,
+			})
+		})
+	}
+}
+
+impl<'a, Loader> Iterator for HighlightSpans<'a, Loader>
+where
+	Loader: LanguageLoader,
+{
+	type Item = HighlightSpan;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		while self.inner.next_event_offset() < self.end_doc.saturating_sub(self.base) {
+			let event_start_local = self.inner.next_event_offset();
+			if event_start_local == u32::MAX {
+				break;
+			}
+			let event_start_doc = Self::doc_offset(self.base, event_start_local);
+			let (event, mut highlights) = self.inner.advance();
+			let new_highlight = highlights.next_back();
+
+			let span = self.close_span(event_start_doc);
+			self.current_start = event_start_doc;
+
+			match event {
+				HighlightEvent::Push => {
+					if new_highlight.is_some() {
+						self.current_highlight = new_highlight;
+					}
+				}
+				HighlightEvent::Refresh => {
+					self.current_highlight = new_highlight;
+				}
+			}
+
+			if span.is_some() {
+				return span;
+			}
+		}
+
+		if let Some(highlight) = self.current_highlight.take() {
+			let local_offset = self.inner.next_event_offset();
+			let end_doc = if local_offset == u32::MAX {
+				self.end_doc
+			} else {
+				Self::doc_offset(self.base, local_offset).min(self.end_doc)
+			};
+
+			if self.current_start < end_doc {
+				return Some(HighlightSpan {
+					start: self.current_start,
+					end: end_doc,
+					highlight,
+				});
+			}
+		}
+
+		None
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use {
+		super::*,
+		crate::{DocumentSession, EngineConfig, Language, SingleLanguageLoader, StringText, tree_sitter::Grammar},
+	};
+
+	#[test]
+	fn later_capture_wins_for_same_range() {
+		const SOURCE: &str = "fn answer() {}\n";
+		const QUERY: &str = r#"
+(identifier) @function
+(identifier) @function.builtin
+"#;
+
+		let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE).expect("rust grammar should load");
+		let loader = SingleLanguageLoader::with_highlights(Language::new(0), grammar, QUERY, "", "", |name| {
+			Some(match name {
+				"function" => Highlight::new(1),
+				"function.builtin" => Highlight::new(2),
+				_ => return None,
+			})
+		})
+		.expect("loader should build");
+		let session = DocumentSession::new(
+			loader.language(),
+			&StringText::new(SOURCE),
+			&loader,
+			EngineConfig::default(),
+		)
+		.expect("session should parse");
+
+		let spans: Vec<_> = session.snapshot().highlight_spans(&loader, ..).collect();
+		let answer = spans
+			.iter()
+			.find(|span| &SOURCE[span.start as usize..span.end as usize] == "answer")
+			.expect("answer span should be present");
+
+		assert_eq!(answer.highlight, Highlight::new(2));
+	}
+
+	#[test]
+	fn non_local_predicate_does_not_drop_sibling_captures() {
+		const SOURCE: &str = r#"fn demo() {
+    let local = 0;
+    local(1);
+}
+"#;
+		const HIGHLIGHT_QUERY: &str = r#"
+(call_expression
+  function: (identifier) @callee
+  arguments: (arguments (integer_literal) @number)
+  (#is-not? local))
+"#;
+		const LOCAL_QUERY: &str = r#"
+(block) @local.scope
+(let_declaration
+  pattern: (identifier) @local.definition.var)
+(identifier) @local.reference
+"#;
+
+		let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE).expect("rust grammar should load");
+		let loader = SingleLanguageLoader::with_highlights(
+			Language::new(0),
+			grammar,
+			HIGHLIGHT_QUERY,
+			"",
+			LOCAL_QUERY,
+			|name| {
+				Some(match name {
+					"callee" => Highlight::new(1),
+					"number" => Highlight::new(2),
+					"var" => Highlight::new(3),
+					_ => return None,
+				})
+			},
+		)
+		.expect("loader should build");
+		let session = DocumentSession::new(
+			loader.language(),
+			&StringText::new(SOURCE),
+			&loader,
+			EngineConfig::default(),
+		)
+		.expect("session should parse");
+
+		let spans: Vec<_> = session.snapshot().highlight_spans(&loader, ..).collect();
+
+		assert!(spans.iter().any(|span| {
+			span.highlight == Highlight::new(2) && &SOURCE[span.start as usize..span.end as usize] == "1"
+		}));
+		assert!(!spans.iter().any(|span| {
+			span.highlight == Highlight::new(1)
+				&& span.start as usize > SOURCE.find("let local").unwrap()
+				&& &SOURCE[span.start as usize..span.end as usize] == "local"
+		}));
+	}
+}
+
 pub(crate) struct HighlightQueryLoader<T>(T);
 
 impl<'a, T: LanguageLoader> QueryLoader<'a> for HighlightQueryLoader<&'a T> {
@@ -450,38 +728,8 @@ impl<'a, T: LanguageLoader> QueryLoader<'a> for HighlightQueryLoader<&'a T> {
 	}
 
 	fn are_predicates_satisfied(
-		&self, lang: Language, mat: &QueryMatch<'_, '_>, source: RopeSlice<'_>, locals_cursor: &ScopeCursor<'_>,
+		&self, _lang: Language, _mat: &QueryMatch<'_, '_>, _source: RopeSlice<'_>, _locals_cursor: &ScopeCursor<'_>,
 	) -> bool {
-		let highlight_query = &self
-			.0
-			.get_config(lang)
-			.expect("must have a config to emit matches")
-			.highlight_query;
-
-		// Highlight queries should reject the match when a pattern is marked with
-		// `(#is-not? local)` and any capture in the pattern matches a definition in scope.
-		//
-		// TODO: in the future we should propose that `#is-not? local` takes one or more
-		// captures as arguments. Ideally we would check that the captured node is also captured
-		// by a `local.reference` capture from the locals query but that's really messy to pass
-		// around that information. For now we assume that all matches in the pattern are also
-		// captured as `local.reference` in the locals, which covers most cases.
-		if highlight_query.local_reference_capture.is_some()
-			&& highlight_query.non_local_patterns.contains(&mat.pattern())
-		{
-			let has_local_reference = mat.matched_nodes().any(|n| {
-				let range = n.node.byte_range();
-				let text: Cow<str> = source.byte_slice(range.start as usize..range.end as usize).into();
-				locals_cursor
-					.locals
-					.lookup_reference(locals_cursor.current_scope(), &text)
-					.is_some_and(|def| range.start >= def.range.start)
-			});
-			if has_local_reference {
-				return false;
-			}
-		}
-
 		true
 	}
 }

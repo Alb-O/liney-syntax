@@ -14,9 +14,10 @@ pub use {
 	crate::{
 		change::{ChangeSet, Revision, SnapshotId, TextEdit, UpdateResult},
 		config::{LanguageConfig, LanguageLoader, SingleLanguageLoader, read_query},
+		highlighter::{HighlightSpan, HighlightSpans},
 		injections_query::{InjectionLanguageMarker, InjectionsQuery},
 		session::{DocumentSession, EngineConfig},
-		snapshot::{DocumentSnapshot, HighlightSpan, HighlightSpans, LocalScope},
+		snapshot::{DocumentSnapshot, LocalScope},
 		text::{ByteRangeText, DocumentText, RopeText, StringText, TextSlice, TextStorage},
 		tree_cursor::TreeCursor,
 	},

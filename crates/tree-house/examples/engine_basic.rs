@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 	)?;
 	let snapshot = session.snapshot();
 
-	let spans: Vec<HighlightSpan> = snapshot.highlights(&loader, ..).collect();
+	let spans: Vec<HighlightSpan> = snapshot.highlight_spans(&loader, ..).collect();
 	assert!(
 		spans
 			.iter()

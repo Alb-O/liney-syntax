@@ -1,5 +1,5 @@
 use {
-	crate::{Highlighter, Language, LanguageLoader, SealedSource, TreeCursor, tree_sitter::InputEdit},
+	crate::{HighlightSpans, Language, LanguageLoader, SealedSource, TreeCursor, tree_sitter::InputEdit},
 	liney_tree_house::{
 		self as tree_house, ByteRangeText, ChangeSet, DocumentSession, EngineConfig, RopeText, TextEdit,
 		tree_sitter::Node,
@@ -170,15 +170,15 @@ impl Syntax {
 		&self.snapshot
 	}
 
-	pub fn highlighter<'a, Loader>(
-		&'a self, source: RopeSlice<'a>, loader: &'a Loader, range: impl RangeBounds<u32>,
-	) -> Highlighter<'a, Loader>
+	pub fn highlight_spans<'a, Loader>(
+		&'a self, loader: &'a Loader, range: impl RangeBounds<u32>,
+	) -> HighlightSpans<'a, Loader>
 	where
 		Loader: LanguageLoader,
 	{
 		if let Some(meta) = &self.viewport {
-			Highlighter::new_mapped(
-				self.snapshot(),
+			HighlightSpans::new_mapped(
+				self.snapshot.syntax(),
 				meta.sealed_source.slice(),
 				loader,
 				range,
@@ -186,7 +186,7 @@ impl Syntax {
 				meta.base_offset + meta.real_len,
 			)
 		} else {
-			Highlighter::new(self.snapshot(), source, loader, range)
+			self.snapshot.highlight_spans(loader, range)
 		}
 	}
 }
@@ -225,7 +225,7 @@ impl From<SyntaxOptions> for EngineConfig {
 mod tests {
 	use {
 		super::*,
-		crate::{SingleLanguageLoader, tree_sitter::Grammar},
+		crate::{Highlight, SingleLanguageLoader, tree_sitter::Grammar},
 		ropey::Rope,
 	};
 
@@ -263,5 +263,66 @@ mod tests {
 
 		assert!(syntax.is_partial());
 		assert_eq!(syntax.snapshot().byte_text(0..12), "fn beta() {\n");
+	}
+
+	#[test]
+	fn viewport_highlight_spans_match_full_document_offsets() {
+		const SOURCE: &str = r#"const BEFORE: u32 = 1;
+
+fn middle(value: i32) -> i32 {
+    let label = "mid";
+    value + 1
+}
+
+const AFTER: u32 = 2;
+"#;
+		const HIGHLIGHT_QUERY: &str = r#"
+(identifier) @identifier
+(primitive_type) @type.builtin
+(string_literal) @string
+(integer_literal) @number
+"#;
+
+		let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE).expect("rust grammar should load");
+		let loader =
+			SingleLanguageLoader::with_highlights(Language::new(0), grammar, HIGHLIGHT_QUERY, "", "", |name| {
+				Some(match name {
+					"identifier" => Highlight::new(1),
+					"type.builtin" => Highlight::new(2),
+					"string" => Highlight::new(3),
+					"number" => Highlight::new(4),
+					_ => return None,
+				})
+			})
+			.expect("loader should build");
+		let rope = Rope::from_str(SOURCE);
+		let full = Syntax::new(rope.slice(..), loader.language(), &loader, SyntaxOptions::default())
+			.expect("full syntax should parse");
+		let viewport_start = SOURCE.find("fn middle").expect("viewport start should exist") as u32;
+		let viewport_end = SOURCE.find("\n\nconst AFTER").expect("viewport end should exist") as u32;
+		let sealed = Arc::new(SealedSource::from_byte_range_with_newline_padding(
+			rope.slice(..),
+			viewport_start..viewport_end,
+		));
+		let viewport = Syntax::new_viewport(
+			sealed,
+			loader.language(),
+			&loader,
+			SyntaxOptions::default(),
+			viewport_start,
+		)
+		.expect("viewport syntax should parse");
+
+		let full_spans: Vec<_> = full.highlight_spans(&loader, viewport_start..viewport_end).collect();
+		let viewport_spans: Vec<_> = viewport
+			.highlight_spans(&loader, viewport_start..viewport_end)
+			.collect();
+
+		assert_eq!(viewport_spans, full_spans);
+		assert!(
+			viewport_spans
+				.iter()
+				.all(|span| span.start >= viewport_start && span.end <= viewport_end)
+		);
 	}
 }
