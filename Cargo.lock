@@ -82,6 +82,7 @@ dependencies = [
  "ropey",
  "slab",
  "tree-house-bindings",
+ "tree-sitter-rust",
 ]
 
 [[package]]

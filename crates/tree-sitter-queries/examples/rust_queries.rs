@@ -1,8 +1,9 @@
 use {
-	liney_tree_house::{Language, SingleLanguageLoader, Syntax, tree_sitter::Grammar},
+	liney_tree_house::{
+		DocumentSession, EngineConfig, Language, SingleLanguageLoader, StringText, tree_sitter::Grammar,
+	},
 	liney_tree_sitter_queries::{RainbowQuery, TagQuery, TextObjectQuery},
-	ropey::Rope,
-	std::{error::Error, time::Duration},
+	std::error::Error,
 };
 
 const SOURCE: &str = r#"struct User {
@@ -59,13 +60,17 @@ fn snippet(start: usize, end: usize) -> &'static str {
 fn main() -> Result<(), Box<dyn Error>> {
 	let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE)?;
 	let loader = SingleLanguageLoader::from_queries(Language::new(0), grammar, "", "", "")?;
-	let rope = Rope::from_str(SOURCE);
-	let syntax = Syntax::new(rope.slice(..), loader.language(), Duration::from_millis(500), &loader)?;
-	let root = syntax.tree().root_node();
+	let session = DocumentSession::new(
+		loader.language(),
+		&StringText::new(SOURCE),
+		&loader,
+		EngineConfig::default(),
+	)?;
+	let snapshot = session.snapshot();
 
 	let text_objects = TextObjectQuery::new(loader.grammar(), TEXT_OBJECT_QUERY)?;
 	let functions: Vec<_> = text_objects
-		.capture_nodes("function.outer", &root, rope.slice(..))
+		.capture_nodes_in_snapshot("function.outer", &snapshot)
 		.expect("function.outer capture should exist")
 		.map(|node| {
 			let range = node.byte_range();
@@ -87,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 	assert!(functions.iter().any(|line| line == "fn main() {"));
 
 	let call_arguments: Vec<_> = text_objects
-		.capture_nodes("call.arguments", &root, rope.slice(..))
+		.capture_nodes_in_snapshot("call.arguments", &snapshot)
 		.expect("call.arguments capture should exist")
 		.map(|node| {
 			let range = node.byte_range();
@@ -99,7 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	let tag_query = TagQuery::new(loader.grammar(), TAG_QUERY)?;
 	let tagged_functions: Vec<_> = tag_query
-		.capture_nodes("name", &root, rope.slice(..))
+		.capture_nodes_in_snapshot("name", &snapshot)
 		.expect("name capture should exist")
 		.map(|node| {
 			let range = node.byte_range();
@@ -113,7 +118,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	let rainbow_query = RainbowQuery::new(loader.grammar(), RAINBOW_QUERY)?;
 	let bracket_count = rainbow_query
-		.bracket_nodes(&root, rope.slice(..))
+		.bracket_nodes_in_snapshot(&snapshot)
 		.expect("rainbow.bracket capture should exist")
 		.count();
 	assert!(bracket_count >= 10);

@@ -1,6 +1,6 @@
 use {
 	crate::{Highlighter, Language, LanguageLoader, SealedSource, TreeCursor, tree_sitter::InputEdit},
-	liney_tree_house::{self as tree_house, tree_sitter::Node},
+	liney_tree_house::{self as tree_house, DocumentSession, EngineConfig, RopeText, tree_sitter::Node},
 	ropey::RopeSlice,
 	std::{ops::RangeBounds, sync::Arc, time::Duration},
 };
@@ -33,7 +33,7 @@ pub struct ViewportMetadata {
 /// Syntax tree wrapper with viewport-aware highlighting support.
 #[derive(Debug, Clone)]
 pub struct Syntax {
-	inner: tree_house::Syntax,
+	snapshot: tree_house::DocumentSnapshot,
 	opts: SyntaxOptions,
 	viewport: Option<ViewportMetadata>,
 }
@@ -42,9 +42,10 @@ impl Syntax {
 	pub fn new(
 		source: RopeSlice<'_>, language: Language, loader: &impl LanguageLoader, opts: SyntaxOptions,
 	) -> Result<Self, tree_house::Error> {
-		let inner = tree_house::Syntax::new(source, language, opts.parse_timeout, loader)?;
+		let text = RopeText::from_slice(source);
+		let session = DocumentSession::new(language, &text, loader, opts.into())?;
 		Ok(Self {
-			inner,
+			snapshot: session.snapshot(),
 			opts,
 			viewport: None,
 		})
@@ -54,9 +55,10 @@ impl Syntax {
 		sealed: Arc<SealedSource>, language: Language, loader: &impl LanguageLoader, opts: SyntaxOptions,
 		base_offset: u32,
 	) -> Result<Self, tree_house::Error> {
-		let inner = tree_house::Syntax::new(sealed.slice(), language, opts.parse_timeout, loader)?;
+		let text = RopeText::from_slice(sealed.slice());
+		let session = DocumentSession::new(language, &text, loader, opts.into())?;
 		Ok(Self {
-			inner,
+			snapshot: session.snapshot(),
 			opts,
 			viewport: Some(ViewportMetadata {
 				base_offset,
@@ -75,7 +77,9 @@ impl Syntax {
 
 		self.opts = opts;
 		self.viewport = None;
-		self.inner.update(source, opts.parse_timeout, edits, loader)
+		let text = RopeText::from_slice(source);
+		self.snapshot = DocumentSession::new(self.root_language(), &text, loader, opts.into())?.snapshot();
+		Ok(())
 	}
 
 	pub fn opts(&self) -> SyntaxOptions {
@@ -87,15 +91,15 @@ impl Syntax {
 	}
 
 	pub fn tree(&self) -> &tree_house::tree_sitter::Tree {
-		self.inner.tree()
+		self.snapshot.tree()
 	}
 
 	pub fn tree_for_byte_range(&self, start: u32, end: u32) -> &tree_house::tree_sitter::Tree {
-		self.inner.tree_for_byte_range(start, end)
+		self.snapshot.tree_for_byte_range(start, end)
 	}
 
 	pub fn root_layer(&self) -> tree_house::Layer {
-		self.inner.root()
+		self.snapshot.root_layer()
 	}
 
 	pub fn root_language(&self) -> Language {
@@ -103,27 +107,31 @@ impl Syntax {
 	}
 
 	pub fn layer(&self, layer: tree_house::Layer) -> &tree_house::LayerData {
-		self.inner.layer(layer)
+		self.snapshot.layer(layer)
 	}
 
 	pub fn layer_for_byte_range(&self, start: u32, end: u32) -> tree_house::Layer {
-		self.inner.layer_for_byte_range(start, end)
+		self.snapshot.layer_for_byte_range(start, end)
 	}
 
 	pub fn layers_for_byte_range(&self, start: u32, end: u32) -> impl Iterator<Item = tree_house::Layer> + '_ {
-		self.inner.layers_for_byte_range(start, end)
+		self.snapshot.layers_for_byte_range(start, end)
 	}
 
 	pub fn named_descendant_for_byte_range(&self, start: u32, end: u32) -> Option<Node<'_>> {
-		self.inner.named_descendant_for_byte_range(start, end)
+		self.snapshot.named_node_at(start, end)
 	}
 
 	pub fn descendant_for_byte_range(&self, start: u32, end: u32) -> Option<Node<'_>> {
-		self.inner.descendant_for_byte_range(start, end)
+		self.snapshot.node_at(start, end)
 	}
 
 	pub fn walk(&self) -> TreeCursor<'_> {
-		self.inner.walk()
+		self.snapshot.walk()
+	}
+
+	pub fn snapshot(&self) -> &tree_house::DocumentSnapshot {
+		&self.snapshot
 	}
 
 	pub fn highlighter<'a, Loader>(
@@ -134,15 +142,23 @@ impl Syntax {
 	{
 		if let Some(meta) = &self.viewport {
 			Highlighter::new_mapped(
-				&self.inner,
-				meta.sealed_source.slice(),
+				self.snapshot(),
 				loader,
 				range,
 				meta.base_offset,
 				meta.base_offset + meta.real_len,
 			)
 		} else {
-			Highlighter::new(&self.inner, source, loader, range)
+			let _ = source;
+			Highlighter::new(self.snapshot(), loader, range)
+		}
+	}
+}
+
+impl From<SyntaxOptions> for EngineConfig {
+	fn from(value: SyntaxOptions) -> Self {
+		Self {
+			parse_timeout: value.parse_timeout,
 		}
 	}
 }

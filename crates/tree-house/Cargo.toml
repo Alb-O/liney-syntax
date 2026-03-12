@@ -12,3 +12,6 @@ regex-cursor.workspace = true
 ropey.workspace = true
 slab.workspace = true
 tree-sitter = { workspace = true, features = ["ropey"] }
+
+[dev-dependencies]
+tree-sitter-rust.workspace = true

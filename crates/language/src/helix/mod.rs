@@ -1,6 +1,6 @@
 use {
+	crate::bundle::load_query_bundle,
 	std::{
-		collections::BTreeMap,
 		fs,
 		path::{Path, PathBuf},
 		process::Command,
@@ -72,40 +72,10 @@ pub fn ensure_helix_queries_checkout(cache_root: &Path, lock: &HelixRuntimeLock)
 
 /// Merges `.scm` files for `language` from `roots`, with later roots overriding
 /// earlier roots by query kind.
-pub fn merge_language_queries(language: &str, roots: &[PathBuf]) -> std::io::Result<BTreeMap<String, String>> {
-	let mut merged = BTreeMap::new();
-
-	for root in roots {
-		let lang_dir = root.join(language);
-		if !lang_dir.is_dir() {
-			continue;
-		}
-
-		for path in collect_files_sorted(&lang_dir, "scm")? {
-			let kind = path
-				.file_stem()
-				.and_then(|stem| stem.to_str())
-				.ok_or_else(|| std::io::Error::other(format!("invalid query filename: {}", path.display())))?
-				.to_string();
-			let text = fs::read_to_string(&path)?;
-			merged.insert(kind, text);
-		}
-	}
-
-	Ok(merged)
-}
-
-fn collect_files_sorted(dir: &Path, extension: &str) -> std::io::Result<Vec<PathBuf>> {
-	let mut files = Vec::new();
-	for entry in fs::read_dir(dir)? {
-		let entry = entry?;
-		let path = entry.path();
-		if path.extension().and_then(|ext| ext.to_str()) == Some(extension) {
-			files.push(path);
-		}
-	}
-	files.sort();
-	Ok(files)
+pub fn merge_language_queries(
+	language: &str, roots: &[PathBuf],
+) -> std::io::Result<std::collections::BTreeMap<String, String>> {
+	load_query_bundle(language, roots).map(|bundle| bundle.into_queries())
 }
 
 fn is_valid_checkout(checkout_dir: &Path, commit: &str) -> bool {

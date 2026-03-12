@@ -1,0 +1,38 @@
+use {
+	liney_tree_house::{
+		DocumentSession, EngineConfig, Language, SingleLanguageLoader, StringText, tree_sitter::Grammar,
+	},
+	liney_tree_sitter_queries::TagQuery,
+	std::error::Error,
+};
+
+const SOURCE: &str = r#"fn alpha() {}
+fn beta() {}
+"#;
+
+const TAG_QUERY: &str = r#"
+(function_item
+  name: (identifier) @name) @definition.function
+"#;
+
+fn main() -> Result<(), Box<dyn Error>> {
+	let grammar = Grammar::try_from(tree_sitter_rust::LANGUAGE)?;
+	let loader = SingleLanguageLoader::from_queries(Language::new(0), grammar, "", "", "")?;
+	let session = DocumentSession::new(
+		loader.language(),
+		&StringText::new(SOURCE),
+		&loader,
+		EngineConfig::default(),
+	)?;
+	let snapshot = session.snapshot();
+	let query = TagQuery::new(loader.grammar(), TAG_QUERY)?;
+	let tags: Vec<_> = query
+		.capture_nodes_in_snapshot("name", &snapshot)
+		.expect("name capture should exist")
+		.map(|node| SOURCE[node.start_byte() as usize..node.end_byte() as usize].to_owned())
+		.collect();
+
+	assert_eq!(tags, vec!["alpha".to_owned(), "beta".to_owned()]);
+	println!("tags={tags:?}");
+	Ok(())
+}

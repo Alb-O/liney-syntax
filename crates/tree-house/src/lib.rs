@@ -12,9 +12,13 @@ use {
 };
 pub use {
 	crate::{
+		change::{ChangeSet, Revision, SnapshotId, TextEdit, UpdateResult},
 		config::{LanguageConfig, LanguageLoader, SingleLanguageLoader, read_query},
 		injections_query::{InjectionLanguageMarker, InjectionsQuery},
 		sealed_source::SealedSource,
+		session::{DocumentSession, EngineConfig},
+		snapshot::{DocumentSnapshot, HighlightSpan, HighlightSpans, LocalScope},
+		text::{ByteRangeText, RopeText, StringText, TextSlice, TextStorage},
 		tree_cursor::TreeCursor,
 	},
 	tree_sitter,
@@ -22,6 +26,7 @@ pub use {
 // pub use pretty_print::pretty_print_tree;
 // pub use tree_cursor::TreeCursor;
 
+pub mod change;
 mod config;
 pub mod highlighter;
 mod injections_query;
@@ -30,7 +35,9 @@ mod parse;
 pub mod locals;
 pub mod query_iter;
 pub mod sealed_source;
-pub mod text_object;
+pub mod session;
+pub mod snapshot;
+pub mod text;
 mod tree_cursor;
 
 /// A layer represents a single a single syntax tree that represents (part of)
@@ -203,6 +210,10 @@ impl Syntax {
 	pub fn walk(&self) -> TreeCursor<'_> {
 		TreeCursor::new(self)
 	}
+
+	pub fn layer_count(&self) -> usize {
+		self.layers.len()
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +265,14 @@ impl LayerData {
 	/// returns `Some` when passed the layer's language in `LanguageLoader::get_config`.
 	pub fn tree(&self) -> Option<&Tree> {
 		self.parse_tree.as_ref()
+	}
+
+	pub fn locals(&self) -> &Locals {
+		&self.locals
+	}
+
+	pub fn parent(&self) -> Option<Layer> {
+		self.parent
 	}
 
 	/// Returns the injection range **within this layers** that contains `idx`.

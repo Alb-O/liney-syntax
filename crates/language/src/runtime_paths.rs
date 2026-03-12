@@ -1,0 +1,126 @@
+use std::path::PathBuf;
+
+pub fn runtime_dir() -> PathBuf {
+	if let Ok(runtime) = std::env::var("LINEY_RUNTIME") {
+		return PathBuf::from(runtime);
+	}
+
+	data_local_dir()
+		.map(|dir| dir.join("liney"))
+		.unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn cache_dir() -> Option<PathBuf> {
+	#[cfg(unix)]
+	{
+		std::env::var_os("XDG_CACHE_HOME")
+			.map(PathBuf::from)
+			.or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+			.map(|path| path.join("liney"))
+	}
+	#[cfg(windows)]
+	{
+		std::env::var_os("LOCALAPPDATA").map(|path| PathBuf::from(path).join("liney").join("cache"))
+	}
+	#[cfg(not(any(unix, windows)))]
+	{
+		None
+	}
+}
+
+pub fn grammar_search_paths() -> Vec<PathBuf> {
+	let mut dirs = Vec::new();
+
+	if let Ok(runtime) = std::env::var("LINEY_RUNTIME") {
+		dirs.push(PathBuf::from(runtime).join("grammars"));
+	}
+
+	if let Ok(exe) = std::env::current_exe()
+		&& let Some(bin_dir) = exe.parent()
+	{
+		dirs.push(bin_dir.join("..").join("share").join("liney").join("grammars"));
+	}
+
+	if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR")
+		&& let Some(workspace) = PathBuf::from(manifest).ancestors().nth(2)
+	{
+		dirs.push(workspace.join("target").join("grammars"));
+	}
+
+	if let Some(cache) = cache_dir() {
+		dirs.push(cache.join("grammars"));
+	}
+
+	if let Some(data) = data_local_dir() {
+		dirs.push(data.join("liney").join("grammars"));
+	}
+
+	for helix_dir in helix_runtime_dirs() {
+		dirs.push(helix_dir.join("grammars"));
+	}
+
+	dirs
+}
+
+pub fn query_search_paths() -> Vec<PathBuf> {
+	let mut dirs = Vec::new();
+
+	if let Ok(runtime) = std::env::var("LINEY_RUNTIME") {
+		dirs.push(PathBuf::from(runtime).join("queries"));
+	}
+
+	if let Some(data) = data_local_dir() {
+		dirs.push(data.join("liney").join("queries"));
+	}
+
+	for helix_dir in helix_runtime_dirs() {
+		dirs.push(helix_dir.join("queries"));
+	}
+
+	dirs
+}
+
+fn data_local_dir() -> Option<PathBuf> {
+	#[cfg(unix)]
+	{
+		std::env::var_os("XDG_DATA_HOME")
+			.map(PathBuf::from)
+			.or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share")))
+	}
+	#[cfg(windows)]
+	{
+		std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+	}
+	#[cfg(not(any(unix, windows)))]
+	{
+		None
+	}
+}
+
+fn helix_runtime_dirs() -> Vec<PathBuf> {
+	let mut dirs = Vec::new();
+
+	if let Ok(runtime) = std::env::var("HELIX_RUNTIME") {
+		dirs.push(PathBuf::from(runtime));
+	}
+
+	#[cfg(unix)]
+	if let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
+		.map(PathBuf::from)
+		.or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+	{
+		let helix_runtime = config.join("helix").join("runtime");
+		if helix_runtime.exists() {
+			dirs.push(helix_runtime);
+		}
+	}
+
+	if let Some(data) = data_local_dir() {
+		let helix_runtime = data.join("helix").join("runtime");
+		if helix_runtime.exists() {
+			dirs.push(helix_runtime);
+		}
+	}
+
+	dirs
+}
