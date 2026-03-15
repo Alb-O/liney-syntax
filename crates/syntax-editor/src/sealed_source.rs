@@ -41,7 +41,7 @@ impl SealedSource {
 		let start = range.start.min(len);
 		let end = range.end.min(len).max(start);
 		let window = source.byte_slice(start as usize..end as usize);
-		let suffix = needs_line_padding(window).then_some("\n").unwrap_or("");
+		let suffix = if needs_line_padding(window) { "\n" } else { "" };
 		Self::from_window(window, suffix)
 	}
 

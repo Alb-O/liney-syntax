@@ -483,8 +483,7 @@ impl HighlightSpan {
 /// Iterator wrapper that emits contiguous highlight spans.
 pub struct HighlightSpans<'a, Loader>
 where
-	Loader: LanguageLoader,
-{
+	Loader: LanguageLoader, {
 	inner: HighlightEvents<'a, 'a, Loader>,
 	current_start: u32,
 	current_highlight: Option<Highlight>,
@@ -621,6 +620,20 @@ where
 	}
 }
 
+pub(crate) struct HighlightQueryLoader<T>(T);
+
+impl<'a, T: LanguageLoader> QueryLoader<'a> for HighlightQueryLoader<&'a T> {
+	fn get_query(&mut self, lang: Language) -> Option<&'a Query> {
+		self.0.get_config(lang).map(|config| &config.highlight_query.query)
+	}
+
+	fn are_predicates_satisfied(
+		&self, _lang: Language, _mat: &QueryMatch<'_, '_>, _source: RopeSlice<'_>, _locals_cursor: &ScopeCursor<'_>,
+	) -> bool {
+		true
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use {
@@ -717,19 +730,5 @@ mod tests {
 				&& span.start as usize > SOURCE.find("let local").unwrap()
 				&& &SOURCE[span.start as usize..span.end as usize] == "local"
 		}));
-	}
-}
-
-pub(crate) struct HighlightQueryLoader<T>(T);
-
-impl<'a, T: LanguageLoader> QueryLoader<'a> for HighlightQueryLoader<&'a T> {
-	fn get_query(&mut self, lang: Language) -> Option<&'a Query> {
-		self.0.get_config(lang).map(|config| &config.highlight_query.query)
-	}
-
-	fn are_predicates_satisfied(
-		&self, _lang: Language, _mat: &QueryMatch<'_, '_>, _source: RopeSlice<'_>, _locals_cursor: &ScopeCursor<'_>,
-	) -> bool {
-		true
 	}
 }

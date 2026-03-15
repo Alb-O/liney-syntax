@@ -29,8 +29,7 @@ pub struct HighlightSpanQuery<'a, Loader, Resolve, S>
 where
 	Loader: LanguageLoader,
 	Resolve: Fn(Highlight) -> S,
-	S: Copy,
-{
+	S: Copy, {
 	pub doc_id: DocumentId,
 	pub syntax_version: u64,
 	pub rope: &'a Rope,
@@ -108,8 +107,7 @@ impl<S> HighlightTiles<S> {
 	where
 		Loader: LanguageLoader,
 		Resolve: Fn(Highlight) -> S,
-		S: Copy,
-	{
+		S: Copy, {
 		if q.start_line >= q.end_line {
 			return Vec::new();
 		}
@@ -157,13 +155,12 @@ impl<S> HighlightTiles<S> {
 	where
 		Loader: LanguageLoader,
 		Resolve: Fn(Highlight) -> S,
-		S: Copy,
-	{
-		if let Some(&idx) = self.index.get(&q.doc_id).and_then(|doc| doc.get(&tile_idx)) {
-			if self.tiles[idx].key == key {
-				self.touch(idx);
-				return idx;
-			}
+		S: Copy, {
+		if let Some(&idx) = self.index.get(&q.doc_id).and_then(|doc| doc.get(&tile_idx))
+			&& self.tiles[idx].key == key
+		{
+			self.touch(idx);
+			return idx;
 		}
 
 		let tile_start_line = tile_idx * TILE_SIZE;
@@ -221,8 +218,7 @@ fn build_tile_spans<Loader, Resolve, S>(
 where
 	Loader: LanguageLoader,
 	Resolve: Fn(Highlight) -> S,
-	S: Copy,
-{
+	S: Copy, {
 	let rope_len_bytes = rope.len_bytes() as u32;
 	if syntax.tree().root_node().end_byte() > rope_len_bytes {
 		return Vec::new();
